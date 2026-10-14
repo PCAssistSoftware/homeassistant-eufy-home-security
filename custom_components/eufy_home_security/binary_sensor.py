@@ -141,7 +141,7 @@ class EufyDeviceFieldBinaryDescription(BinarySensorEntityDescription):
 
     read: Callable[[SubDeviceState], bool | None]
     attributes_fn: Callable[[SubDeviceState], dict[str, Any]] | None = None
-    # Only for a device whose model declares a battery (``detections.has_battery``):
+    # Only for a device whose model declares a battery (``Station.has_battery``):
     # a mains-powered camera reports a charging field too, which the eufy app hides.
     battery: bool = False
 
@@ -217,8 +217,7 @@ def _async_add_state_binary_sensors(
         for device in coordinator.station.devices
         if device.device_sn
         for description in DEVICE_FIELD_BINARY_SENSORS
-        if not description.battery
-        or detections.has_battery(coordinator.station, device.device_sn) is not False
+        if not description.battery or coordinator.station.has_battery(device.device_sn) is not False
     )
     async_add_when_reported(entry, coordinator, candidates, async_add_entities)
 
