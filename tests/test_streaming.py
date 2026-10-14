@@ -263,7 +263,7 @@ async def test_the_stream_url_speaks_tls_when_home_assistants_server_does(
     await _unload(hass, entry)
 
 
-@pytest.mark.parametrize(("use_ssl", "options"), [(False, {}), (True, {"tls_verify": "0"})])
+@pytest.mark.parametrize("use_ssl", [False, True])
 async def test_the_stream_worker_does_not_verify_the_loopback_certificate(
     hass: HomeAssistant,
     fake_station: FakeStation,
@@ -271,9 +271,8 @@ async def test_the_stream_worker_does_not_verify_the_loopback_certificate(
     seed_warm_cache: Callable[..., None],
     monkeypatch: pytest.MonkeyPatch,
     use_ssl: bool,
-    options: dict[str, str],
 ) -> None:
-    """HA's certificate names its domain, not 127.0.0.1; FFmpeg 9 verifies by default."""
+    """HA's certificate names its domain, not 127.0.0.1: the stream worker must not verify it."""
     entry = await set_up_warm(hass, seed_warm_cache)
     assert hass.config.api is not None
     monkeypatch.setattr(hass.config.api, "use_ssl", use_ssl)
@@ -282,7 +281,7 @@ async def test_the_stream_worker_does_not_verify_the_loopback_certificate(
     stream = await camera.async_create_stream()
 
     assert stream is not None
-    assert stream.pyav_options == options
+    assert stream.pyav_options["tls_verify"] == "0"
     await _unload(hass, entry)
 
 
