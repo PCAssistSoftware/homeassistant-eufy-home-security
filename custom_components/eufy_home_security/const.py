@@ -225,6 +225,7 @@ ERROR_SESSION_REJECTED: Final = "session_rejected"
 EXC_AUTH_FAILED: Final = "auth_failed"
 # An arm or disarm the station answered but did not apply.
 EXC_GUARD_MODE_NOT_APPLIED: Final = "guard_mode_not_applied"
+EXC_GUARD_MODE_NOT_SUPPORTED: Final = "guard_mode_not_supported"
 # A setting write the station answered but did not apply. The entity keeps
 # the last value it read, so nothing shows a value the station never took.
 EXC_SETTING_NOT_APPLIED: Final = "setting_not_applied"
@@ -232,10 +233,6 @@ EXC_SETTING_NOT_APPLIED: Final = "setting_not_applied"
 # not pair it to this station, or its cloud record names no slot. Both are ordinary
 # runtime states rather than programming errors, so both are named.
 EXC_SETTING_DEVICE_UNAVAILABLE: Final = "setting_device_unavailable"
-# A per-mode action or delay write the library refused before sending anything: the
-# mode's whole table cannot be written back unchanged (a device reports no action for
-# the mode, is of no known kind, or devices hold different delays for it).
-EXC_SETTING_MODE_TABLE_REFUSED: Final = "setting_mode_table_refused"
 # A setting write that timed out: it may still apply, the next poll shows whether it did.
 EXC_SETTING_UNCONFIRMED: Final = "setting_unconfirmed"
 # A setting value the library refused before sending (off its step, outside its domain).
@@ -307,6 +304,8 @@ EXC_RECORDING_FAILED: Final = "recording_failed"
 EXC_RECORDING_NOT_RUNNING: Final = "recording_not_running"
 # A clip stopped before the camera sent its first picture: nothing was saved.
 EXC_RECORDING_STOPPED_EMPTY: Final = "recording_stopped_empty"
+# A security mode the select shows but cannot set (a custom mode, geofencing).
+EXC_SECURITY_MODE_NOT_SETTABLE: Final = "security_mode_not_settable"
 
 # Repair issue translation keys (the top-level "issues" key of strings.json). Each
 # issue id is the key followed by the entry id, and for a station's issue the
@@ -378,6 +377,8 @@ DEFAULT_PRESET_KEY: Final = "default_preset"
 # The live-view preset select, and its option for "wherever the camera stands".
 LIVE_PRESET_KEY: Final = "live_preset"
 LIVE_PRESET_CAMERA_DEFAULT: Final = "camera_default"
+# The station's security-mode select: translation key and unique-id key.
+SECURITY_MODE_KEY: Final = "security_mode"
 # The pan/tilt step buttons' translation and unique-id keys, one fixed step each.
 PAN_LEFT_KEY: Final = "pan_left"
 PAN_RIGHT_KEY: Final = "pan_right"
@@ -518,6 +519,11 @@ ATTR_APPLIES_WHEN: Final = "applies_when"
 ATTR_APPLIES_WHEN_LABEL: Final = "applies_when_label"
 # On a controlling setting: dependent setting key -> the option label it applies at.
 ATTR_CONTROLS: Final = "controls"
+# The library's section id of a setting (``Setting.section``), for templates.
+ATTR_SECTION: Final = "section"
+# Where a setting's value comes from: ``p2p``, ``cloud`` or ``app_default``
+# (``StationState.setting_source``); absent while there is no value.
+ATTR_VALUE_SOURCE: Final = "value_source"
 
 # Setting keys whose write changes the picture size a camera sends: a running live view
 # is ended so the next open starts at the new size (an MPEG-TS stream cannot carry a

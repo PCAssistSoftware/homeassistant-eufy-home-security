@@ -27,6 +27,8 @@ from .const import (
     ATTR_APPLIES_WHEN,
     ATTR_APPLIES_WHEN_LABEL,
     ATTR_CONTROLS,
+    ATTR_SECTION,
+    ATTR_VALUE_SOURCE,
     DOMAIN,
     PICTURE_CHANGING_SETTINGS,
 )
@@ -213,17 +215,16 @@ class EufySettingEntity(EufyDeviceEntity):
     value decodes and whether it is writable.
     """
 
-    # Constant for the entity's life: kept out of the recorder.
-    _unrecorded_attributes = frozenset({ATTR_APPLIES_WHEN, ATTR_APPLIES_WHEN_LABEL, ATTR_CONTROLS})
+    # Constant for the entity's life, or provenance only: kept out of the recorder.
+    _unrecorded_attributes = frozenset(
+        {ATTR_APPLIES_WHEN, ATTR_APPLIES_WHEN_LABEL, ATTR_CONTROLS, ATTR_SECTION, ATTR_VALUE_SOURCE}
+    )
 
     def __init__(self, coordinator: StationCoordinator, spec: SettingEntitySpec) -> None:
         super().__init__(coordinator, spec.device_sn, spec.key)
         self._spec = spec
-        if spec.translated:
-            self._attr_translation_key = spec.key
-        else:
-            # Vendor identifiers carry no translation of ours; the library names them.
-            self._attr_name = spec.setting.name
+        # Vendor identifiers carry no translation of ours; the library names them.
+        self._attr_name = spec.setting.name
         self._attr_assumed_state = not spec.setting.readable
         self._attr_entity_category = (
             EntityCategory.CONFIG if spec.is_control else EntityCategory.DIAGNOSTIC
@@ -245,8 +246,11 @@ class EufySettingEntity(EufyDeviceEntity):
     @property
     @override
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """``applies_when`` with its label on a dependent; ``controls`` on the setting it depends on."""
-        attributes: dict[str, Any] = {}
+        """``section`` and ``value_source``; ``applies_when`` with its label on a dependent;
+        ``controls`` on the setting it depends on."""
+        attributes: dict[str, Any] = {ATTR_SECTION: self._spec.setting.section}
+        if (source := self._value_source()) is not None:
+            attributes[ATTR_VALUE_SOURCE] = source
         if (condition := self._spec.setting.applies_when) is not None:
             key, wanted = condition
             attributes[ATTR_APPLIES_WHEN] = f"{key}={wanted}"
@@ -258,7 +262,22 @@ class EufySettingEntity(EufyDeviceEntity):
                 attributes[ATTR_APPLIES_WHEN_LABEL] = label
         if controls := self._controls():
             attributes[ATTR_CONTROLS] = controls
-        return attributes or None
+        return attributes
+
+    def _value_source(self) -> str | None:
+        """The library's source of the shown value (``p2p``, ``cloud``, ``app_default``), else None.
+
+        None while the value is unknown, and for a value shown from a write of a setting the
+        dump never reports (``_written``).
+        """
+        data: StationState | None = self.coordinator.data
+        if data is None or self._unsettled or not self._spec.setting.readable:
+            return None
+        try:
+            source = data.setting_source(self._spec.setting.key, device_sn=self._spec.device_sn)
+        except UnsupportedError:
+            return None
+        return None if source is None else str(source)
 
     def _controls(self) -> dict[str, str]:
         """Dependent setting key -> the option label it applies at.
@@ -355,9 +374,8 @@ class EufySettingEntity(EufyDeviceEntity):
                 self._write_target(),
                 on_demand=self.coordinator.station.connects_on_demand,
             ) from err
-        except UnsupportedError as err:
-            if self._spec.writes_mode_table:
-                raise errors.setting_mode_table_refused(self._write_target()) from err
+        except UnsupportedError:
+            # A write the library does not send: a programming error, not the device's answer.
             raise
         except DeviceTimeoutError as err:
             self._unsettled = True
@@ -371,41 +389,6 @@ class EufySettingEntity(EufyDeviceEntity):
             ) from err
         self._async_show_written(value)
         await self._async_restart_stream_if_picture_changed()
-
-    async def async_write_mode_action(self, on: bool) -> None:
-        """Turn this entity's action bit on or off for its guard mode; other bits are kept.
-
-        The library reads the current mask, changes the one bit and confirms the table
-        by read-back. A timed-out write shows unknown until the next state, as in
-        ``async_write_setting``.
-        """
-        action, flag, device_sn = self._spec.action, self._spec.flag, self._spec.device_sn
-        if action is None or flag is None or device_sn is None:
-            raise UnsupportedError(f"{self._spec.key} is not a per-mode action bit")
-        self._require_addressable()
-        try:
-            await self.coordinator.station.async_set_mode_action(
-                action.mode, flag, on, device_sn=device_sn
-            )
-        except CommandError as err:
-            raise errors.setting_write_failed(
-                err,
-                self._write_target(),
-                on_demand=self.coordinator.station.connects_on_demand,
-            ) from err
-        except UnsupportedError as err:
-            raise errors.setting_mode_table_refused(self._write_target()) from err
-        except DeviceTimeoutError as err:
-            self._unsettled = True
-            self.async_write_ha_state()
-            raise errors.setting_write_unconfirmed(self._write_target()) from err
-        except EufySecurityError as err:
-            raise errors.setting_write_failed(
-                err,
-                self._write_target(),
-                on_demand=self.coordinator.station.connects_on_demand,
-            ) from err
-        self._async_show_written(None)
 
     async def async_write_flag(self, on: bool) -> None:
         """Turn this entity's member of a ``FLAGS`` setting on or off; other bits are kept.

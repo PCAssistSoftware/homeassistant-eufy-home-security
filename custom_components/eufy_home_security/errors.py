@@ -61,6 +61,7 @@ from eufy_home_security import (
     SessionReplacedError,
     SkippedDevice,
     Station,
+    UnsupportedError,
     redact,
     redact_serial,
 )
@@ -83,6 +84,7 @@ from .const import (
     EXC_DEFAULT_PRESET_NEEDS_CONFIRMATION,
     EXC_DEVICE_LIST_REFRESH_FAILED,
     EXC_GUARD_MODE_NOT_APPLIED,
+    EXC_GUARD_MODE_NOT_SUPPORTED,
     EXC_LIVE_STREAM_LIMIT,
     EXC_ON_DEMAND_UNREACHABLE,
     EXC_PAN_TILT_NOT_APPLIED,
@@ -103,9 +105,9 @@ from .const import (
     EXC_RECORDING_NOT_RUNNING,
     EXC_RECORDING_STOPPED_EMPTY,
     EXC_RECORDING_UNSUPPORTED,
+    EXC_SECURITY_MODE_NOT_SETTABLE,
     EXC_SESSION_REPLACED_SEE_REPAIRS,
     EXC_SETTING_DEVICE_UNAVAILABLE,
-    EXC_SETTING_MODE_TABLE_REFUSED,
     EXC_SETTING_NOT_APPLIED,
     EXC_SETTING_UNCONFIRMED,
     EXC_SETTING_VALUE_INVALID,
@@ -268,6 +270,8 @@ def arm_failed(
       (``CommandNotAppliedError``, usually an owner id it does not hold) or answered
       with an error or another mode (``CommandRejectedError``, a -108
       ``CommandUnsupportedError`` included).
+    - ``UnsupportedError`` (any other): the library refused before sending, a station
+      model whose guard mode it does not set.
     - ``KeyRejectedError``: the write reconnected and the station rejected even its
       re-fetched key; the station's key-rejected repair is the remedy.
     - ``CipherUnusableError``: eufy serves no key the station's connection method can
@@ -280,8 +284,8 @@ def arm_failed(
       asleep: a wake takes about ten seconds and may fail.
 
     The only placeholder is ``target``, the requested mode's lower-case name: no
-    serial and no library text. Six of these seven messages are shared with
-    :func:`setting_write_failed`. The caller lets a plain ``UnsupportedError`` propagate.
+    serial and no library text. Six of these eight messages are shared with
+    :func:`setting_write_failed`.
     """
     if is_session_replaced_failure(err):
         key = EXC_SESSION_REPLACED_SEE_REPAIRS
@@ -289,6 +293,8 @@ def arm_failed(
         key = EXC_ON_DEMAND_UNREACHABLE
     elif isinstance(err, CommandError):
         key = EXC_GUARD_MODE_NOT_APPLIED
+    elif isinstance(err, UnsupportedError):
+        key = EXC_GUARD_MODE_NOT_SUPPORTED
     elif isinstance(err, KeyRejectedError):
         key = EXC_STATION_KEY_REJECTED
     elif isinstance(err, CipherUnusableError):
@@ -319,8 +325,8 @@ def setting_write_failed(
     ``target`` is the only placeholder: the entity's translated name, or its catalog
     key when it has none; never a serial, an owner account id or the library's text.
     A plain ``UnsupportedError`` does not arrive here: the caller maps it to
-    :func:`setting_device_unavailable` or :func:`setting_mode_table_refused`, or lets
-    a catalog-shape programming error propagate.
+    :func:`setting_device_unavailable`, or lets a catalog-shape programming error
+    propagate.
     """
     if is_session_replaced_failure(err):
         key = EXC_SESSION_REPLACED_SEE_REPAIRS
@@ -360,23 +366,6 @@ def setting_device_unavailable(target: str) -> HomeAssistantError:
     )
 
 
-def setting_mode_table_refused(target: str) -> HomeAssistantError:
-    """A per-mode action or delay write the library refused, nothing sent.
-
-    These settings are written as their mode's whole table, and the library refuses
-    with ``UnsupportedError`` when that table cannot be written back unchanged: a
-    paired device reports no action for the mode, a device is of no known kind (a
-    siren accessory whose triggers the table would clear), or devices hold different
-    values for a delay the table carries as one. A retry cannot fix it. ``target`` is
-    the entity's translated name, never a serial; no library text.
-    """
-    return HomeAssistantError(
-        translation_domain=DOMAIN,
-        translation_key=EXC_SETTING_MODE_TABLE_REFUSED,
-        translation_placeholders={"target": target},
-    )
-
-
 def setting_write_unconfirmed(target: str) -> HomeAssistantError:
     """A setting write that got no answer in time; it may still apply.
 
@@ -401,6 +390,18 @@ def setting_value_invalid(target: str) -> ServiceValidationError:
         translation_domain=DOMAIN,
         translation_key=EXC_SETTING_VALUE_INVALID,
         translation_placeholders={"target": target},
+    )
+
+
+def security_mode_not_settable(mode: str) -> ServiceValidationError:
+    """A security mode the select shows but does not set (Off); nothing sent.
+
+    ``mode`` is the option's name, the only placeholder.
+    """
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key=EXC_SECURITY_MODE_NOT_SETTABLE,
+        translation_placeholders={"mode": mode},
     )
 
 

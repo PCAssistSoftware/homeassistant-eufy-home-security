@@ -440,11 +440,11 @@ async def test_a_read_only_duration_reads_in_whole_seconds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A read-only range in seconds is a duration sensor with no decimals."""
-    _as_read_only(monkeypatch, "alarm_delay_custom_2")
-    seed_setting(fake_station, "alarm_delay_custom_2", 60)
+    _as_read_only(monkeypatch, "video_clip_length")
+    seed_setting(fake_station, "video_clip_length", 60)
     entry = await set_up_warm(hass, seed_warm_cache)
     registry = er.async_get(hass)
-    entity_id = entity_id_for(hass, SENSOR_DOMAIN, SYNTHETIC.camera_sn, "alarm_delay_custom_2")
+    entity_id = entity_id_for(hass, SENSOR_DOMAIN, SYNTHETIC.camera_sn, "video_clip_length")
     registry.async_update_entity(entity_id, disabled_by=None)
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()

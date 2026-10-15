@@ -35,10 +35,12 @@ from . import (
     detections,
     errors,
     history,
+    homebase,
     preset_upload,
     recordings,
     runtime,
     session_probe,
+    settings_layout,
     small_images,
     stale_devices,
     station_recordings,
@@ -66,7 +68,12 @@ from .coordinator import StationCoordinator
 from .events import EventRouter
 from .presets import PresetManager
 from .runtime import EufyConfigEntry
-from .settings import offered_only_without_parent, setting_specs
+from .settings import (
+    is_per_mode_entity,
+    is_setting_row,
+    offered_only_without_parent,
+    setting_specs,
+)
 from .snapshots import SnapshotManager, camera_image_mode
 from .storage import StorageCoordinator
 from .streaming import StreamManager
@@ -153,12 +160,15 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Serve the bundled dashboard card, keep its resource current, and register the
-    station-recordings and preset-picture websocket commands and the thumbnail view."""
+    """Serve the bundled dashboard cards, keep their resources current, and register the
+    websocket commands (station recordings, preset pictures, settings layout, HomeBase
+    and arming groups) and the thumbnail view."""
     del config  # config entries only
     await card.async_setup_card(hass)
     station_recordings.async_setup(hass)
     preset_upload.async_setup(hass)
+    settings_layout.async_setup(hass)
+    homebase.async_setup(hass)
     return True
 
 
@@ -490,7 +500,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: EufyConfigEntry) -> bool
         station_recordings=station_recordings.StationRecordings(hass, stored_recordings),
     )
     _async_forget_moved_setting_entities(hass, entry, coordinators.values())
+    _async_forget_dropped_setting_entities(hass, entry, coordinators.values())
     _async_forget_parentless_setting_entities(hass, entry, coordinators.values())
+    _async_forget_per_mode_entities(hass, entry)
     _async_forget_battery_entities(hass, entry, coordinators.values())
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     for serial, storage_coordinator in storage.items():
@@ -601,6 +613,56 @@ def _async_forget_moved_setting_entities(
                     registry.async_remove(entity_id)
 
 
+def _async_forget_dropped_setting_entities(
+    hass: HomeAssistant, entry: EufyConfigEntry, coordinators: Iterable[StationCoordinator]
+) -> None:
+    """Forget a served device's setting row the library no longer lists.
+
+    Two kinds of row, never a unique id this setup builds and only this entry's rows on
+    the setting platforms of a served station or its paired devices:
+
+    - a ``toggles`` member switch of a setting still listed, for a member the library no
+      longer names (``<serial>_<key>_<member>``);
+    - a setting row (``is_setting_row``) whose key the library answers for: not a setting
+      of the device in this release (``Station.has_setting`` False), or one this setup
+      builds no row for. Kept while the device's settings are not known (None).
+    """
+    registry = er.async_get(hass)
+    built: set[str] = set()
+    served: dict[str, tuple[Station, str | None]] = {}
+    members: dict[str, set[str]] = {}
+    for coordinator in coordinators:
+        station = coordinator.station
+        served[station.serial] = (station, None)
+        served.update(
+            (device.device_sn, (station, device.device_sn))
+            for device in station.sub_devices
+            if device.device_sn and device.device_sn != station.serial
+        )
+        for spec in setting_specs(station):
+            serial = spec.device_sn or station.serial
+            built.add(entity_unique_id(serial, spec.key))
+            if spec.member is not None:
+                members.setdefault(serial, set()).add(
+                    f"{entity_unique_id(serial, spec.setting.key)}_"
+                )
+    for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
+        unique_id = registered.unique_id
+        if registered.domain not in _SETTING_DOMAINS or unique_id in built:
+            continue
+        serial, _, key = unique_id.partition("_")
+        if serial not in served:
+            continue
+        dropped_member = registered.domain == Platform.SWITCH and any(
+            unique_id.startswith(prefix) for prefix in members.get(serial, ())
+        )
+        station, device_sn = served[serial]
+        if dropped_member or (
+            is_setting_row(registered) and station.has_setting(key, device_sn) is not None
+        ):
+            registry.async_remove(registered.entity_id)
+
+
 # The battery-bound rows of a paired device, by platform domain.
 _BATTERY_UNIQUE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
@@ -672,6 +734,20 @@ def _async_forget_parentless_setting_entities(
             registry.async_remove(registered.entity_id)
 
 
+def _async_forget_per_mode_entities(hass: HomeAssistant, entry: EufyConfigEntry) -> None:
+    """Forget the per-mode delay and action-bit rows of earlier releases.
+
+    The HomeBase card edits a mode's device actions and delays
+    (``settings.is_per_mode``); no setup builds these entities, so a row left would stay
+    as an unavailable orphan. Only this entry's rows on the setting platforms, matched by
+    unique-id key (``settings.is_per_mode_entity``).
+    """
+    registry = er.async_get(hass)
+    for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if registered.domain in _SETTING_DOMAINS and is_per_mode_entity(registered.unique_id):
+            registry.async_remove(registered.entity_id)
+
+
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry[Any]) -> None:
     """Forget the account's secrets, keeping its sign-in hold-off and install identity.
 
@@ -682,7 +758,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry[Any]) -> No
 
     Any account-id-mismatch or cipher-unavailable issue goes too: an entry whose
     setup failed was never unloaded, so nothing else deletes it. The entry's cached
-    stills are deleted, and with the last entry the dashboard card's resource. The
+    stills are deleted, and with the last entry the dashboard cards' resources. The
     record of the recordings copied into the history goes too; the files stay.
     """
     errors.delete_reload_scoped_issues(hass, entry)
