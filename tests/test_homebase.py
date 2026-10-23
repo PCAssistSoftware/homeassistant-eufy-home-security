@@ -1938,7 +1938,8 @@ async def test_a_station_model_whose_guard_mode_the_library_refuses_is_reported_
     await advance_to_poll(hass, POLL_INTERVAL_SECONDS + 1)
 
     assert raised.value.translation_key == "guard_mode_not_supported"
-    assert raised.value.translation_placeholders == {"target": "home"}
+    station = entry.runtime_data.coordinators[fake_station.serial].station
+    assert raised.value.translation_placeholders == {"target": "home", "station": station.name}
     assert [c for c in fake_station.received if c.get("cmd") == 1224] == []
     assert state_of(hass, entity_id) == "Away"
     assert states == []

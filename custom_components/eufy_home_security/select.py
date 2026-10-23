@@ -9,7 +9,9 @@ camera returns to on its own when idle. Options are the enabled slot indexes and
 value is ``Station.default_preset``, both from the cached slots (no wake); the
 entity re-reads them on the camera's presets signal. Picking one calls
 ``Station.async_set_default_preset``, which turns the camera there and confirms by
-read-back. A capture holding the camera refuses it before anything is sent.
+read-back. A capture holding the camera refuses it before anything is sent. A model
+that cannot change its default behind its station (``PtzAction.SET_DEFAULT`` unknown)
+keeps the select, which shows the default, and refuses a change before sending.
 
 **Live view preset** (one per pan/tilt camera with a live stream): the slot every
 live view opens at, or ``camera_default``. Home Assistant's own state, restored across
@@ -46,6 +48,7 @@ from eufy_home_security import (
     DeviceBusyError,
     EufySecurityError,
     GuardMode,
+    PtzActionUnsupportedError,
     StationConfig,
     StationState,
     UnsupportedError,
@@ -199,6 +202,11 @@ class EufyDefaultPresetSelect(EufyPushAvailability, EufyDeviceEntity, SelectEnti
             # Before UnsupportedError: a -108 receipt is both, and was sent.
             _LOGGER.debug("Default preset %d of %s not handled by the station", index, serial)
             raise errors.ptz_command_not_handled() from err
+        except PtzActionUnsupportedError as err:
+            _LOGGER.debug(
+                "Default preset %d of %s refused: the model has no default", index, serial
+            )
+            raise errors.ptz_action_unsupported(err) from err
         except UnsupportedError as err:
             _LOGGER.debug("Default preset %d of %s refused: slot not set", index, serial)
             raise errors.preset_not_set(index) from err
@@ -207,14 +215,20 @@ class EufyDefaultPresetSelect(EufyPushAvailability, EufyDeviceEntity, SelectEnti
             if err.code == _NEEDS_CONFIRMATION_CODE:
                 raise errors.default_preset_needs_confirmation() from err
             raise errors.setting_write_failed(
-                err, self._write_target(), on_demand=station.connects_on_demand
+                err,
+                self._write_target(),
+                station_name=errors.station_display_name(self.coordinator),
+                on_demand=station.connects_on_demand,
             ) from err
         except EufySecurityError as err:
             _LOGGER.debug(
                 "Default preset %d of %s failed: %s", index, serial, errors.failure_reason(err)
             )
             raise errors.setting_write_failed(
-                err, self._write_target(), on_demand=station.connects_on_demand
+                err,
+                self._write_target(),
+                station_name=errors.station_display_name(self.coordinator),
+                on_demand=station.connects_on_demand,
             ) from err
         _LOGGER.debug("Default preset of %s is now %d (read back)", serial, index)
         self.async_write_ha_state()
@@ -302,6 +316,7 @@ class EufyLivePresetSelect(EufyPushAvailability, EufyDeviceEntity, SelectEntity,
             raise errors.setting_write_failed(
                 err,
                 name if isinstance(name, str) else LIVE_PRESET_KEY,
+                station_name=errors.station_display_name(self.coordinator),
                 on_demand=station.connects_on_demand,
             ) from err
         streams.async_choose_live_preset(self._serial, index)
@@ -385,7 +400,10 @@ class EufySecurityModeSelect(EufyStationEntity, SelectEntity):
             applied = await self.coordinator.station.async_set_guard_mode(target)
         except EufySecurityError as err:
             raise errors.arm_failed(
-                err, target, on_demand=self.coordinator.station.connects_on_demand
+                err,
+                target,
+                station_name=errors.station_display_name(self.coordinator),
+                on_demand=self.coordinator.station.connects_on_demand,
             ) from err
         self.coordinator.async_apply_guard_mode(applied)
         self.async_write_ha_state()

@@ -25,10 +25,13 @@ from eufy_home_security import (
     DeviceBusyError,
     DeviceTimeoutError,
     PresetSlotsFullError,
+    PtzAction,
+    PtzActionUnsupportedError,
     Station,
     UnsupportedError,
     redact_serial,
 )
+from eufy_home_security.devices import Evidence, Support
 from eufy_home_security.p2p.messages import STANDALONE_RECEIPT_LEN
 from eufy_home_security.testing import SYNTHETIC, FakeCloud, FakeStation
 from homeassistant.components.image import async_get_image
@@ -36,6 +39,7 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from PIL import Image
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.eufy_home_security import (
     detections,
@@ -975,6 +979,10 @@ async def test_a_default_preset_while_a_capture_holds_the_camera_is_refused(
         (DeviceBusyError("busy"), "capture_in_progress"),
         (UnsupportedError("preset 2 is not set"), "preset_not_set"),
         (CommandUnsupportedError(1350, -108), "ptz_command_not_handled"),
+        (
+            PtzActionUnsupportedError("no default", action=PtzAction.SET_DEFAULT),
+            "preset_default_unsupported",
+        ),
     ],
 )
 async def test_a_failed_default_preset_write_keeps_the_value_and_says_why(
@@ -1272,7 +1280,7 @@ async def test_changing_the_live_view_preset_while_watching_turns_the_running_vi
         (DeviceBusyError("busy"), "capture_in_progress"),
         (UnsupportedError("preset 1 is not set"), "preset_not_set"),
         (CommandUnsupportedError(1700, -108), "ptz_command_not_handled"),
-        (CommandRejectedError(1700, 1), "setting_not_applied"),
+        (CommandRejectedError(1700, 1), "setting_rejected"),
     ],
 )
 async def test_a_failed_turn_while_watching_keeps_the_choice_and_says_why(
@@ -1459,7 +1467,7 @@ async def test_zooming_while_watching_zooms_the_running_view(
         (DeviceBusyError("busy"), "capture_in_progress"),
         (UnsupportedError("dual view"), "zoom_needs_single_view"),
         (CommandUnsupportedError(1350, -108), "ptz_command_not_handled"),
-        (CommandRejectedError(1350, 1), "setting_not_applied"),
+        (CommandRejectedError(1350, 1), "setting_rejected"),
     ],
 )
 async def test_a_failed_zoom_while_watching_keeps_the_zoom_and_says_why(
@@ -1957,6 +1965,89 @@ async def _save(hass: HomeAssistant, **data) -> dict:
     return dict(response[camera_id])  # type: ignore[arg-type]
 
 
+async def test_a_model_that_cannot_store_gets_no_save_view_and_keeps_its_default_select(
+    hass: HomeAssistant, fake_cloud, seed_warm_cache, built_clients, fake_station, monkeypatch
+):
+    """``STORE`` unknown: no Save current view; ``SET_DEFAULT`` unknown: the Default preset
+    select stays (it shows the default; a change is refused)."""
+    real = Station.ptz_action_support
+
+    def support(self, device_sn, action):
+        if action in (PtzAction.STORE, PtzAction.SET_DEFAULT):
+            return Evidence(Support.UNKNOWN, "graded unknown by the test")
+        return real(self, device_sn, action)
+
+    monkeypatch.setattr(Station, "ptz_action_support", support)
+    entry = await set_up_warm(hass, seed_warm_cache)
+    registry = er.async_get(hass)
+
+    assert registry.async_get_entity_id("button", DOMAIN, f"{SN}_save_view") is None
+    assert registry.async_get_entity_id("select", DOMAIN, f"{SN}_default_preset") is not None
+    assert registry.async_get_entity_id("button", DOMAIN, f"{SN}_refresh_presets") is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_setup_forgets_the_save_view_row_of_a_model_that_cannot_store(
+    hass: HomeAssistant, fake_cloud, seed_warm_cache, built_clients, fake_station, monkeypatch
+):
+    """A Save current view row an earlier release built is removed; the Default preset
+    row stays, even where the model cannot change the default."""
+    real = Station.ptz_action_support
+
+    def support(self, device_sn, action):
+        if action in (PtzAction.STORE, PtzAction.SET_DEFAULT):
+            return Evidence(Support.UNKNOWN, "graded unknown by the test")
+        return real(self, device_sn, action)
+
+    monkeypatch.setattr(Station, "ptz_action_support", support)
+    seed_warm_cache()
+    entry = add_entry(hass)
+    registry = er.async_get(hass)
+    save = registry.async_get_or_create("button", DOMAIN, f"{SN}_save_view", config_entry=entry)
+    default = registry.async_get_or_create(
+        "select", DOMAIN, f"{SN}_default_preset", config_entry=entry
+    )
+
+    assert await setup_entry(hass, entry)
+
+    assert registry.async_get(save.entity_id) is None
+    assert registry.async_get(default.entity_id) is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_setup_keeps_a_preset_edit_row_another_entry_owns(
+    hass: HomeAssistant, fake_cloud, seed_warm_cache, built_clients, fake_station, monkeypatch
+):
+    """Only this entry's rows are forgotten, even for an edit the model lacks."""
+    real = Station.ptz_action_support
+
+    def support(self, device_sn, action):
+        if action is PtzAction.STORE:
+            return Evidence(Support.UNKNOWN, "graded unknown by the test")
+        return real(self, device_sn, action)
+
+    monkeypatch.setattr(Station, "ptz_action_support", support)
+    seed_warm_cache()
+    other = MockConfigEntry(domain=DOMAIN, unique_id="other@example.invalid")
+    other.add_to_hass(hass)
+    registry = er.async_get(hass)
+    foreign = registry.async_get_or_create(
+        "button", DOMAIN, f"{SN}_save_view", config_entry=other
+    ).entity_id
+    entry = add_entry(hass)
+
+    assert await setup_entry(hass, entry)
+
+    assert registry.async_get(foreign) is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
 async def test_save_current_view_stores_the_lowest_free_slot_and_adds_its_entities(
     hass: HomeAssistant, fake_cloud, seed_warm_cache, built_clients, fake_station
 ):
@@ -2138,6 +2229,17 @@ async def test_a_save_while_a_capture_holds_the_camera_is_refused(
         (UnsupportedError("no slot 8"), {"preset": 8}, "preset_slot_unknown"),
         (UnsupportedError("declares no store"), {}, "preset_save_unsupported"),
         (CommandUnsupportedError(1700, -108), {"preset": 4}, "ptz_command_not_handled"),
+        # The model lacks the action: named as such, never as an unknown slot.
+        (
+            PtzActionUnsupportedError("no store", action=PtzAction.STORE),
+            {"preset": 4},
+            "preset_save_unsupported",
+        ),
+        (
+            PtzActionUnsupportedError("no default", action=PtzAction.SET_DEFAULT),
+            {"preset": 4, "make_default": True},
+            "preset_default_unsupported",
+        ),
     ],
 )
 async def test_a_failed_save_says_why(
@@ -2268,6 +2370,10 @@ async def test_deleting_the_default_slot_leaves_the_default_select_unknown(
     [
         (CommandNotAppliedError(6033), "preset_not_deleted"),
         (CommandUnsupportedError(1700, -108), "ptz_command_not_handled"),
+        (
+            PtzActionUnsupportedError("no delete", action=PtzAction.DELETE),
+            "preset_delete_unsupported",
+        ),
         (DeviceBusyError("busy"), "capture_in_progress"),
         (DeviceTimeoutError("no answer"), "on_demand_unreachable"),
     ],

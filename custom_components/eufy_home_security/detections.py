@@ -32,10 +32,14 @@ from eufy_home_security import (
     AlarmPhase,
     ArmingSource,
     DetectionType,
+    DeviceAlarm,
+    DeviceAlarmChanged,
     GuardMode,
+    PtzAction,
     PushMessageType,
     SecurityEvent,
     Station,
+    StationFeature,
 )
 from eufy_home_security.devices import (
     Capability,
@@ -265,6 +269,15 @@ def has_zoom(station: Station, serial: str) -> bool:
     return _ptz_supported(station, serial, Capability.PTZ_ZOOM)
 
 
+def has_ptz_action(station: Station, serial: str, action: PtzAction) -> bool:
+    """Whether the camera ``serial`` on ``station`` gets the control for a preset edit.
+
+    ``Station.ptz_action_support`` grades ``action`` other than ``UNKNOWN``: the model
+    declares it and the library sends it behind this station.
+    """
+    return station.ptz_action_support(serial, action).support is not Support.UNKNOWN
+
+
 def _ptz_supported(station: Station, serial: str, capability: Capability) -> bool:
     return station.ptz_support(serial, capability).support is not Support.UNKNOWN
 
@@ -275,6 +288,40 @@ def zoom_signal(entry_id: str, device_sn: str) -> SignalType[()]:
     The name is never logged or stored.
     """
     return SignalType(f"{DOMAIN}_zoom_{entry_id}_{device_sn}")
+
+
+def device_siren_alarms(station: Station) -> dict[str, tuple[DeviceAlarm, ...]]:
+    """Each device of ``station`` that gets a camera siren -> the alarms it offers.
+
+    Camera kinds only (:func:`has_detection_entities`) with at least one alarm. A
+    station's own serial only when it is standalone: the library sends a HomeBase's own
+    device alarm as its station siren, which is the HomeBase siren's.
+    """
+    offered: dict[str, tuple[DeviceAlarm, ...]] = {}
+    for serial, kind in paired_device_kinds(station).items():
+        if serial == station.serial and not station.is_standalone:
+            continue
+        if not has_detection_entities(kind):
+            continue
+        if alarms := station.device_alarms(serial):
+            offered[serial] = alarms
+    return offered
+
+
+def has_station_siren(station: Station) -> bool:
+    """Whether ``station`` gets the HomeBase siren: not standalone, and its model's
+    ``StationFeature.SOUND_ALARM`` graded other than unknown."""
+    if station.is_standalone:
+        return False
+    return station.config_support(StationFeature.SOUND_ALARM).support is not Support.UNKNOWN
+
+
+def siren_serials(station: Station) -> frozenset[str]:
+    """The serials of ``station`` (its own included) that get a siren entity."""
+    serials = set(device_siren_alarms(station))
+    if has_station_siren(station):
+        serials.add(station.serial)
+    return frozenset(serials)
 
 
 def has_live_stream(station: Station, serial: str) -> bool:
@@ -504,6 +551,14 @@ def station_signal(entry_id: str, station_sn: str) -> SignalType[SecurityEvent]:
     The name is never logged or stored.
     """
     return SignalType(f"{DOMAIN}_station_event_{entry_id}_{station_sn}")
+
+
+def device_alarm_signal(entry_id: str, device_sn: str) -> SignalType[DeviceAlarmChanged]:
+    """The dispatcher signal of one device's own alarm transitions in one entry.
+
+    The name is never logged or stored.
+    """
+    return SignalType(f"{DOMAIN}_device_alarm_changed_{entry_id}_{device_sn}")
 
 
 def alarm_signal(entry_id: str, station_sn: str) -> SignalType[AlarmChanged]:

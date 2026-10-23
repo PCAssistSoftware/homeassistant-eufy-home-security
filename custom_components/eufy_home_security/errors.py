@@ -47,6 +47,8 @@ from eufy_home_security import (
     CloudInvite,
     CloudProblem,
     CommandError,
+    CommandNotAppliedError,
+    CommandUnsupportedError,
     ConnectionChanged,
     CredentialsRefreshed,
     EufySecurityError,
@@ -55,6 +57,8 @@ from eufy_home_security import (
     LiveStreamLimitError,
     LoginChallengeError,
     LoginVerificationError,
+    PtzAction,
+    PtzActionUnsupportedError,
     RateLimitedError,
     RefreshCooldownError,
     RegionStatus,
@@ -86,12 +90,16 @@ from .const import (
     EXC_CLOUD_UNAVAILABLE,
     EXC_DEFAULT_PRESET_NEEDS_CONFIRMATION,
     EXC_DEVICE_LIST_REFRESH_FAILED,
+    EXC_GUARD_MODE_COMMAND_UNSUPPORTED,
     EXC_GUARD_MODE_NOT_APPLIED,
     EXC_GUARD_MODE_NOT_SUPPORTED,
+    EXC_GUARD_MODE_REJECTED,
     EXC_LIVE_STREAM_LIMIT,
     EXC_ON_DEMAND_UNREACHABLE,
     EXC_PAN_TILT_NOT_APPLIED,
     EXC_PAN_TILT_UNSUPPORTED,
+    EXC_PRESET_DEFAULT_UNSUPPORTED,
+    EXC_PRESET_DELETE_UNSUPPORTED,
     EXC_PRESET_IMAGE_INVALID,
     EXC_PRESET_NOT_DELETED,
     EXC_PRESET_NOT_SAVED,
@@ -110,10 +118,16 @@ from .const import (
     EXC_RECORDING_UNSUPPORTED,
     EXC_SECURITY_MODE_NOT_SETTABLE,
     EXC_SESSION_REPLACED_SEE_REPAIRS,
+    EXC_SETTING_COMMAND_UNSUPPORTED,
     EXC_SETTING_DEVICE_UNAVAILABLE,
     EXC_SETTING_NOT_APPLIED,
+    EXC_SETTING_REJECTED,
     EXC_SETTING_UNCONFIRMED,
     EXC_SETTING_VALUE_INVALID,
+    EXC_SIREN_DURATION_INVALID,
+    EXC_SIREN_NOT_CONFIRMED,
+    EXC_SIREN_REJECTED,
+    EXC_SIREN_UNSUPPORTED,
     EXC_STATION_KEY_REJECTED,
     EXC_STATION_KEY_UNUSABLE,
     EXC_STATION_UNREACHABLE,
@@ -142,6 +156,8 @@ from .const import (
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
+
+    from .coordinator import StationCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -256,10 +272,35 @@ def failure_reason(err: BaseException) -> str:
     return name
 
 
+# The messages that name the station whose answer they report.
+_STATION_NAMED_KEYS: Final = frozenset(
+    {
+        EXC_GUARD_MODE_COMMAND_UNSUPPORTED,
+        EXC_GUARD_MODE_NOT_APPLIED,
+        EXC_GUARD_MODE_NOT_SUPPORTED,
+        EXC_GUARD_MODE_REJECTED,
+        EXC_SETTING_COMMAND_UNSUPPORTED,
+        EXC_SETTING_NOT_APPLIED,
+        EXC_SETTING_REJECTED,
+    }
+)
+
+
+def _command_key(err: CommandError, not_applied: str, unsupported: str, rejected: str) -> str:
+    """The key of a station's answer: acknowledged and not acted on (the wrong-account
+    case), "not supported by this device" (-108, -103), or any other refusal."""
+    if isinstance(err, CommandNotAppliedError):
+        return not_applied
+    if isinstance(err, CommandUnsupportedError):
+        return unsupported
+    return rejected
+
+
 def arm_failed(
     err: EufySecurityError,
     target: GuardMode,
     *,
+    station_name: str,
     on_demand: bool = False,
 ) -> HomeAssistantError:
     """An arm or disarm the station did not apply, or could not receive.
@@ -270,10 +311,11 @@ def arm_failed(
       session; ``session_replaced_see_repairs`` points at the account's repair.
     - ``CameraWakeError`` (also a ``CommandError``): the station answered but could
       not wake the camera; the message says the camera may be asleep.
-    - ``CommandError``: the station was reached and did not apply the mode
-      (``CommandNotAppliedError``, usually an owner id it does not hold) or answered
-      with an error or another mode (``CommandRejectedError``, a -108
-      ``CommandUnsupportedError`` included).
+    - ``CommandError``: the station was reached and did not apply the mode. Acknowledged
+      and never acted on (``CommandNotAppliedError``, usually an owner id it does not
+      hold: the only message with the sharing hint), answered "not supported"
+      (``CommandUnsupportedError``, -108 or -103), or answered with another error
+      (``CommandRejectedError``).
     - ``UnsupportedError`` (any other): the library refused before sending, a station
       model whose guard mode it does not set.
     - ``KeyRejectedError``: the write reconnected and the station rejected even its
@@ -287,16 +329,22 @@ def arm_failed(
       (a battery camera without a HomeBase) the message says the camera may be
       asleep: a wake takes about ten seconds and may fail.
 
-    The only placeholder is ``target``, the requested mode's lower-case name: no
-    serial and no library text. Six of these eight messages are shared with
-    :func:`setting_write_failed`.
+    Placeholders: ``target``, the requested mode's lower-case name, and, for the
+    station's own answers and refusals, ``station``, ``station_name`` (the station's
+    eufy name: a standalone camera's own); no serial and no library text. The messages
+    without ``station`` are shared with :func:`setting_write_failed`.
     """
     if is_session_replaced_failure(err):
         key = EXC_SESSION_REPLACED_SEE_REPAIRS
     elif isinstance(err, CameraWakeError):
         key = EXC_ON_DEMAND_UNREACHABLE
     elif isinstance(err, CommandError):
-        key = EXC_GUARD_MODE_NOT_APPLIED
+        key = _command_key(
+            err,
+            EXC_GUARD_MODE_NOT_APPLIED,
+            EXC_GUARD_MODE_COMMAND_UNSUPPORTED,
+            EXC_GUARD_MODE_REJECTED,
+        )
     elif isinstance(err, UnsupportedError):
         key = EXC_GUARD_MODE_NOT_SUPPORTED
     elif isinstance(err, KeyRejectedError):
@@ -307,10 +355,11 @@ def arm_failed(
         key = EXC_CLOUD_UNAVAILABLE
     else:
         key = EXC_ON_DEMAND_UNREACHABLE if on_demand else EXC_STATION_UNREACHABLE
+    placeholders = {"target": target.name.lower()}
+    if key in _STATION_NAMED_KEYS:
+        placeholders["station"] = station_name
     return HomeAssistantError(
-        translation_domain=DOMAIN,
-        translation_key=key,
-        translation_placeholders={"target": target.name.lower()},
+        translation_domain=DOMAIN, translation_key=key, translation_placeholders=placeholders
     )
 
 
@@ -318,16 +367,18 @@ def setting_write_failed(
     err: EufySecurityError,
     target: str,
     *,
+    station_name: str,
     on_demand: bool = False,
 ) -> HomeAssistantError:
     """A setting write the station did not apply, or could not receive.
 
-    The outcomes and order of :func:`arm_failed`, except that ``CommandError`` (the
-    station did not apply the value, or answered with an error) has its own key:
-    "the change was not applied" is not "the alarm was not armed".
+    The outcomes and order of :func:`arm_failed`, except that a ``CommandError`` (the
+    station did not apply the value, answered "not supported", or refused) has keys of
+    its own: "the change was not applied" is not "the alarm was not armed".
 
-    ``target`` is the only placeholder: the entity's translated name, or its catalog
-    key when it has none; never a serial, an owner account id or the library's text.
+    ``target`` is the entity's translated name, or its catalog key when it has none;
+    ``station`` (``station_name``) is added for the station's own answers. Never a
+    serial, an owner account id or the library's text.
     A plain ``UnsupportedError`` does not arrive here: the caller maps it to
     :func:`setting_device_unavailable`, or lets a catalog-shape programming error
     propagate.
@@ -337,7 +388,9 @@ def setting_write_failed(
     elif isinstance(err, CameraWakeError):
         key = EXC_ON_DEMAND_UNREACHABLE
     elif isinstance(err, CommandError):
-        key = EXC_SETTING_NOT_APPLIED
+        key = _command_key(
+            err, EXC_SETTING_NOT_APPLIED, EXC_SETTING_COMMAND_UNSUPPORTED, EXC_SETTING_REJECTED
+        )
     elif isinstance(err, KeyRejectedError):
         key = EXC_STATION_KEY_REJECTED
     elif isinstance(err, CipherUnusableError):
@@ -346,10 +399,11 @@ def setting_write_failed(
         key = EXC_CLOUD_UNAVAILABLE
     else:
         key = EXC_ON_DEMAND_UNREACHABLE if on_demand else EXC_STATION_UNREACHABLE
+    placeholders = {"target": target}
+    if key in _STATION_NAMED_KEYS:
+        placeholders["station"] = station_name
     return HomeAssistantError(
-        translation_domain=DOMAIN,
-        translation_key=key,
-        translation_placeholders={"target": target},
+        translation_domain=DOMAIN, translation_key=key, translation_placeholders=placeholders
     )
 
 
@@ -394,6 +448,67 @@ def setting_value_invalid(target: str) -> ServiceValidationError:
         translation_domain=DOMAIN,
         translation_key=EXC_SETTING_VALUE_INVALID,
         translation_placeholders={"target": target},
+    )
+
+
+def siren_failed(
+    err: EufySecurityError,
+    target: str,
+    *,
+    on_demand: bool = False,
+) -> HomeAssistantError:
+    """A siren start or stop the device did not confirm, refused, or could not receive.
+
+    The order of :func:`arm_failed`, with the siren's own keys where the device
+    answered:
+
+    - :func:`is_session_replaced_failure`: ``session_replaced_see_repairs``.
+    - ``CameraWakeError``: the station could not wake the camera.
+    - ``CommandNotAppliedError``: acknowledged, never confirmed; the siren may or may
+      not have changed.
+    - ``CommandError`` (any other, a -108 ``CommandUnsupportedError`` included): the
+      device answered with an error.
+    - ``UnsupportedError``: refused before sending (the alarm is not offered here, or the
+      device is not paired to this station).
+    - ``KeyRejectedError``, ``CipherUnusableError``, ``CloudError``: the station's key
+      repairs or the cloud, as for a setting write.
+    - Anything else (``DeviceTimeoutError``, ``CommunicationError``): the station did not
+      answer; with ``on_demand`` the camera may be asleep.
+
+    ``target`` is the only placeholder: the entity's name, never a serial or library text.
+    """
+    if is_session_replaced_failure(err):
+        key = EXC_SESSION_REPLACED_SEE_REPAIRS
+    elif isinstance(err, CameraWakeError):
+        key = EXC_ON_DEMAND_UNREACHABLE
+    elif isinstance(err, CommandNotAppliedError):
+        key = EXC_SIREN_NOT_CONFIRMED
+    elif isinstance(err, CommandError):
+        key = EXC_SIREN_REJECTED
+    elif isinstance(err, UnsupportedError):
+        key = EXC_SIREN_UNSUPPORTED
+    elif isinstance(err, KeyRejectedError):
+        key = EXC_STATION_KEY_REJECTED
+    elif isinstance(err, CipherUnusableError):
+        key = EXC_STATION_KEY_UNUSABLE
+    elif isinstance(err, CloudError):
+        key = EXC_CLOUD_UNAVAILABLE
+    else:
+        key = EXC_ON_DEMAND_UNREACHABLE if on_demand else EXC_STATION_UNREACHABLE
+    return HomeAssistantError(
+        translation_domain=DOMAIN,
+        translation_key=key,
+        translation_placeholders={"target": target},
+    )
+
+
+def siren_duration_invalid(longest: int) -> ServiceValidationError:
+    """A HomeBase siren duration above the longest the library sends (``longest`` s);
+    nothing sent. The placeholder is that length only."""
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key=EXC_SIREN_DURATION_INVALID,
+        translation_placeholders={"max": str(longest)},
     )
 
 
@@ -804,9 +919,25 @@ def preset_slot_unknown(index: int) -> ServiceValidationError:
 
 
 def preset_save_unsupported() -> ServiceValidationError:
-    """A save to a free slot on a camera whose model cannot store a preset; nothing sent."""
+    """A save on a camera whose model cannot store a preset; nothing sent."""
     return ServiceValidationError(
         translation_domain=DOMAIN, translation_key=EXC_PRESET_SAVE_UNSUPPORTED
+    )
+
+
+_PTZ_ACTION_KEYS: Final[Mapping[str, str]] = {
+    PtzAction.STORE: EXC_PRESET_SAVE_UNSUPPORTED,
+    PtzAction.DELETE: EXC_PRESET_DELETE_UNSUPPORTED,
+    PtzAction.SET_DEFAULT: EXC_PRESET_DEFAULT_UNSUPPORTED,
+}
+
+
+def ptz_action_unsupported(err: PtzActionUnsupportedError) -> ServiceValidationError:
+    """A preset edit the camera's model lacks behind its station (``err.action``); nothing
+    sent. Any other action reads as a camera without presets."""
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key=_PTZ_ACTION_KEYS.get(err.action, EXC_PRESETS_UNSUPPORTED),
     )
 
 
@@ -883,6 +1014,13 @@ def credentials_refreshed_issue_id(entry_id: str, device_id: str) -> str:
 def station_label(device: dr.BaseDeviceEntry) -> str:
     """How repair text names a station: the name the user gave it, else its own name."""
     return device.name_by_user or device.name or ""
+
+
+def station_display_name(coordinator: StationCoordinator) -> str:
+    """How an error names the coordinator's station: as :func:`station_label` names its
+    registered device, else by the station's eufy name."""
+    device = _station_device(coordinator.hass, coordinator.config_entry, coordinator.station.serial)
+    return station_label(device) if device is not None else coordinator.station.name
 
 
 def _station_device(

@@ -31,6 +31,36 @@ reloads the integration.
 - Schedule and the Custom modes are shown, never set.
 - A mode changed in the eufy app shows within 45 s.
 
+## Sirens
+
+- **Siren** of a camera: where the eufy app offers the camera's model an alarm, a
+  standalone camera included. Its `available_tones` are the alarms the app offers that
+  model on its station: `sound`, `light`, `sound_and_light`. No `tone`: the app's
+  preselected alarm.
+  - It sounds for 30 s; no duration or volume.
+  - On while the camera reports its alarm on, whoever started it (this siren, the eufy
+    app, a detection); off when it reports the alarm over, or once its time has run out
+    without that report. Unknown after a restart until the camera's first report. A
+    camera whose alarm the station plays as its alarm tone shows the HomeBase's alarm
+    state instead. Turning it off after it went quiet is no error.
+  - Turning it off stops each alarm that may be sounding: the one the camera reports and
+    the ones started and not yet stopped; for an alarm the report does not name (a
+    detection's siren) and after a restart, every alarm the camera offers.
+  - Tested on a T8170 behind a HomeBase 3 (sound: start and stop confirmed); the state
+    and the other models follow the eufy app, not tested here.
+- **Siren** of a HomeBase: the HomeBase's own siren, where the library sounds its model
+  (tested on a T8030).
+  - On while the HomeBase alarms, whoever started the alarm. It is not read again after
+    a reconnect or a restart: an alarm that ends meanwhile can still show on, and one
+    sounding at a restart shows off until its next change.
+  - The HomeBase reports its siren as its alarm: while it sounds, the alarm panel shows
+    **Triggered** and the alarm event fires, so automations on a triggered alarm run. A
+    camera siren the station plays as its alarm tone does the same.
+  - `duration` is rounded up to a length the library sends (30 s); a longer one is
+    refused and nothing is sent.
+- A start the device refuses or does not confirm raises an error, and nothing shows on
+  that the device did not report. A refused stop raises an error too.
+
 ## Detections
 
 Each camera has a Motion, Person, Pet and Vehicle sensor and a **Detection** event
@@ -256,8 +286,10 @@ Which cameras get these: [devices.md](devices.md#pan-tilt-presets-and-zoom).
 - The actions target the camera entity, for camera cards with PTZ controls.
 - A camera without presets (T8410) gets only the pan/tilt buttons and `pan_tilt`; the
   preset actions are refused, and `zoom` on a camera without zoom too. Nothing is sent.
-- A camera that cannot save a view (T8173) refuses **Save current view** and
-  `save_preset`. Nothing is sent.
+- A camera that cannot save a view (T8173) gets no **Save current view** button (nor
+  the card's Save view tile) and refuses `save_preset`. One that cannot change its
+  default preset (T8419, T8423, T8W11) shows its **Default preset** but refuses a
+  change and `make_default`. Nothing is sent.
 
 ## Standalone battery cameras
 
@@ -357,6 +389,8 @@ HomeBase (version strings by parameter id; the subsystems are unnamed) and
   - Some on/off settings share one device value with others (the HomeBase's
     notification switches). A toggle changes only its own part. It is refused, with
     nothing sent, while the device does not report that value.
+- The **Camera** switch turns a camera on or off; a camera turned off stops detecting
+  and recording.
 - A setting it can only read is a diagnostic sensor or binary sensor, disabled until
   you enable it. A setting it can neither read nor write has no entity.
 - **Per-mode actions and delays** (what each camera and sensor does in Home, Away and

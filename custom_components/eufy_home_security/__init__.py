@@ -22,6 +22,7 @@ from eufy_home_security import (
     AuthenticationError,
     EufySecurityError,
     LoginNeed,
+    PtzAction,
     RateLimitedError,
     SessionReplacedError,
     Station,
@@ -60,6 +61,8 @@ from .const import (
     CONF_SCAN_REGIONS,
     DEFAULT_EVENT_HISTORY_DAYS,
     DOMAIN,
+    SAVE_VIEW_KEY,
+    SIREN_KEY,
     SOLAR_CHARGING_KEY,
     SOLAR_INTENSITY_KEY,
     WORKING_DAYS_KEY,
@@ -90,6 +93,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
+    Platform.SIREN,
     Platform.SWITCH,
     Platform.TEXT,
     Platform.UPDATE,
@@ -511,6 +515,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: EufyConfigEntry) -> bool
     _async_forget_parentless_setting_entities(hass, entry, coordinators.values())
     _async_forget_per_mode_entities(hass, entry)
     _async_forget_battery_entities(hass, entry, coordinators.values())
+    _async_forget_siren_entities(hass, entry, coordinators.values())
+    _async_forget_save_view_entities(hass, entry, coordinators.values())
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     for serial, storage_coordinator in storage.items():
         if coordinators[serial].station.connected:
@@ -707,6 +713,55 @@ def _async_forget_battery_entities(
                     registered = registry.async_get(entity_id)
                     if registered is not None and registered.config_entry_id == entry.entry_id:
                         registry.async_remove(entity_id)
+
+
+def _async_forget_siren_entities(
+    hass: HomeAssistant, entry: EufyConfigEntry, coordinators: Iterable[StationCoordinator]
+) -> None:
+    """Forget the siren row of a listed device the siren platform no longer builds.
+
+    The library stopped offering its alarm (or the HomeBase siren), so the row would stay
+    as an unavailable orphan. Only this entry's rows, only devices the station lists.
+    """
+    registry = er.async_get(hass)
+    for coordinator in coordinators:
+        station = coordinator.station
+        built = detections.siren_serials(station)
+        listed = {station.serial} | {d.device_sn for d in station.devices if d.device_sn}
+        for serial in listed - built:
+            entity_id = registry.async_get_entity_id(
+                Platform.SIREN, DOMAIN, entity_unique_id(serial, SIREN_KEY)
+            )
+            if entity_id is None:
+                continue
+            registered = registry.async_get(entity_id)
+            if registered is not None and registered.config_entry_id == entry.entry_id:
+                registry.async_remove(entity_id)
+
+
+def _async_forget_save_view_entities(
+    hass: HomeAssistant, entry: EufyConfigEntry, coordinators: Iterable[StationCoordinator]
+) -> None:
+    """Forget the Save current view row of a listed camera whose model cannot store a
+    preset behind its station (``PtzAction.STORE`` under ``Station.ptz_action_support``).
+
+    The button platform builds none for it; a row an earlier release built would stay as
+    an unavailable orphan. Only this entry's rows, only devices the station lists.
+    """
+    registry = er.async_get(hass)
+    for coordinator in coordinators:
+        station = coordinator.station
+        for serial in {station.serial} | {d.device_sn for d in station.devices if d.device_sn}:
+            if detections.has_ptz_action(station, serial, PtzAction.STORE):
+                continue
+            entity_id = registry.async_get_entity_id(
+                Platform.BUTTON, DOMAIN, entity_unique_id(serial, SAVE_VIEW_KEY)
+            )
+            if entity_id is None:
+                continue
+            registered = registry.async_get(entity_id)
+            if registered is not None and registered.config_entry_id == entry.entry_id:
+                registry.async_remove(entity_id)
 
 
 def _async_forget_parentless_setting_entities(

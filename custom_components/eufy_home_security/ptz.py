@@ -25,6 +25,7 @@ from eufy_home_security import (
     EufySecurityError,
     PanTilt,
     PresetSlotsFullError,
+    PtzActionUnsupportedError,
     UnsupportedError,
     redact_serial,
 )
@@ -85,6 +86,7 @@ async def async_pan_tilt(
         raise errors.setting_write_failed(
             err,
             _target(name, direction.name.lower()),
+            station_name=errors.station_display_name(coordinator),
             on_demand=station.connects_on_demand,
         ) from err
     _LOGGER.debug("Pan/tilt %s of %s done", direction.name, serial)
@@ -115,7 +117,10 @@ async def async_goto_preset(
     except EufySecurityError as err:
         _LOGGER.debug("Go-to %d of %s failed: %s", index, serial, errors.failure_reason(err))
         raise errors.setting_write_failed(
-            err, _target(name, "goto_preset"), on_demand=station.connects_on_demand
+            err,
+            _target(name, "goto_preset"),
+            station_name=errors.station_display_name(coordinator),
+            on_demand=station.connects_on_demand,
         ) from err
     _LOGGER.debug("Go-to %d of %s sent%s", index, serial, " during a live view" if watching else "")
 
@@ -143,6 +148,7 @@ async def async_set_live_zoom(
         raise errors.setting_write_failed(
             err,
             _target(name, LIVE_ZOOM_KEY),
+            station_name=errors.station_display_name(coordinator),
             on_demand=coordinator.station.connects_on_demand,
         ) from err
     _LOGGER.debug(
@@ -180,6 +186,9 @@ async def async_save_preset(
         raise errors.capture_in_progress() from err
     except CommandUnsupportedError as err:
         raise _not_handled(f"Save to {target}", serial, err) from err
+    except PtzActionUnsupportedError as err:
+        _LOGGER.debug("Save to %s of %s refused: the model has no %s", target, serial, err.action)
+        raise errors.ptz_action_unsupported(err) from err
     except UnsupportedError as err:
         _LOGGER.debug("Save to %s of %s refused: %s", target, serial, type(err).__name__)
         if preset is None:
@@ -209,7 +218,10 @@ async def async_save_preset(
     except EufySecurityError as err:
         _LOGGER.debug("Save to %s of %s failed: %s", target, serial, errors.failure_reason(err))
         raise errors.setting_write_failed(
-            err, _target(name, SERVICE_SAVE_PRESET), on_demand=station.connects_on_demand
+            err,
+            _target(name, SERVICE_SAVE_PRESET),
+            station_name=errors.station_display_name(coordinator),
+            on_demand=station.connects_on_demand,
         ) from err
     manager.async_forget_image(device_sn, slot.index)
     _LOGGER.debug(
@@ -243,6 +255,9 @@ async def async_delete_preset(
         raise errors.capture_in_progress() from err
     except CommandUnsupportedError as err:
         raise _not_handled(f"Delete of preset {index}", serial, err) from err
+    except PtzActionUnsupportedError as err:
+        _LOGGER.debug("Delete of preset %d of %s refused: the model has no delete", index, serial)
+        raise errors.ptz_action_unsupported(err) from err
     except UnsupportedError as err:
         _LOGGER.debug("Delete of preset %d of %s refused: %s", index, serial, type(err).__name__)
         raise errors.preset_slot_unknown(index) from err
@@ -256,7 +271,10 @@ async def async_delete_preset(
             "Delete of preset %d of %s failed: %s", index, serial, errors.failure_reason(err)
         )
         raise errors.setting_write_failed(
-            err, _target(name, SERVICE_DELETE_PRESET), on_demand=station.connects_on_demand
+            err,
+            _target(name, SERVICE_DELETE_PRESET),
+            station_name=errors.station_display_name(coordinator),
+            on_demand=station.connects_on_demand,
         ) from err
     manager.async_forget_image(device_sn, index)
     _LOGGER.debug("Deleted preset %d of %s", index, serial)

@@ -53,6 +53,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -112,7 +113,7 @@ async def test_a_camera_number_shows_the_station_value_and_writes_it(
 # ── writes the station did not apply or could not receive ────────────────────
 
 
-async def test_a_number_write_the_station_rejects_raises_setting_not_applied(
+async def test_a_number_write_the_station_rejects_raises_setting_rejected(
     hass: HomeAssistant,
     fake_station: FakeStation,
     built_clients: list[EufySecurity],
@@ -130,13 +131,46 @@ async def test_a_number_write_the_station_rejects_raises_setting_not_applied(
     await hass.async_block_till_done()
 
     assert raised.value.translation_domain == DOMAIN
-    assert raised.value.translation_key == _NOT_APPLIED
+    assert raised.value.translation_key == "setting_rejected"
     placeholders = raised.value.translation_placeholders
     assert placeholders is not None
-    assert set(placeholders) == {"target"}
+    assert set(placeholders) == {"target", "station"}
+    assert (
+        placeholders["station"]
+        == entry.runtime_data.coordinators[SYNTHETIC.station_sn].station.name
+    )
     assert placeholders["target"] == settings_of("T8160")[_RETRIGGER].name
     assert SYNTHETIC.camera_sn not in placeholders["target"]
     assert state_of(hass, entity_id) == "30"
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_a_refusal_names_the_station_as_the_user_renamed_it(
+    hass: HomeAssistant,
+    fake_station: FakeStation,
+    built_clients: list[EufySecurity],
+    seed_warm_cache: Callable[..., None],
+) -> None:
+    """The station's name in an error is the one the user gave its device."""
+    seed_setting(fake_station, _RETRIGGER, 30)
+    entry = await set_up_warm(hass, seed_warm_cache)
+    entity_id = entity_id_for(hass, NUMBER_DOMAIN, SYNTHETIC.camera_sn, _RETRIGGER)
+    assert state_of(hass, entity_id) == "30"
+
+    devices = dr.async_get(hass)
+    device = devices.async_get_device_by_identifier((DOMAIN, SYNTHETIC.station_sn), entry.entry_id)
+    assert device is not None
+    devices.async_update_device(device.id, name_by_user="Hallway hub")
+    fake_station.account_id = "another-account"  # the ECB result code is then -104
+    with pytest.raises(HomeAssistantError) as raised:
+        await set_number(hass, entity_id, 45)
+    await hass.async_block_till_done()
+
+    assert raised.value.translation_key == "setting_rejected"
+    assert raised.value.translation_placeholders is not None
+    assert raised.value.translation_placeholders["station"] == "Hallway hub"
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
@@ -206,9 +240,10 @@ async def test_a_number_off_its_step_is_refused_as_a_validation_error(
     ("error", "key"),
     [
         (CommandNotAppliedError(1250), _NOT_APPLIED),
-        (CommandRejectedError(1250, 6, "station reports another value"), _NOT_APPLIED),
-        # A -108 receipt: a rejection and an UnsupportedError at once.
-        (CommandUnsupportedError(1250, -108), _NOT_APPLIED),
+        (CommandRejectedError(1250, 6, "station reports another value"), "setting_rejected"),
+        # A -108 or -103 receipt: a rejection and an UnsupportedError at once.
+        (CommandUnsupportedError(1250, -108), "setting_command_unsupported"),
+        (CommandUnsupportedError(1250, -103), "setting_command_unsupported"),
         # The station answered; the camera behind it did not wake.
         (CameraWakeError(1250, -204), _ON_DEMAND_UNREACHABLE),
         (StationUnreachableError("no reply to discovery"), _UNREACHABLE),
@@ -232,12 +267,13 @@ def test_setting_write_failures_map_to_translated_errors(
 
     The same twelve errors the arm path maps, so the two write paths cannot drift.
     """
-    translated = errors.setting_write_failed(error, "Clip length")
+    translated = errors.setting_write_failed(error, "Clip length", station_name="Base")
 
     assert isinstance(translated, HomeAssistantError)
     assert translated.translation_domain == DOMAIN
     assert translated.translation_key == key
-    assert translated.translation_placeholders == {"target": "Clip length"}
+    named = {"station": "Base"} if key.startswith("setting_") else {}
+    assert translated.translation_placeholders == {"target": "Clip length", **named}
 
 
 async def test_a_write_to_a_device_with_no_channel_names_it_instead_of_raising(

@@ -230,9 +230,13 @@ EXC_AUTH_FAILED: Final = "auth_failed"
 # An arm or disarm the station answered but did not apply.
 EXC_GUARD_MODE_NOT_APPLIED: Final = "guard_mode_not_applied"
 EXC_GUARD_MODE_NOT_SUPPORTED: Final = "guard_mode_not_supported"
+EXC_GUARD_MODE_REJECTED: Final = "guard_mode_rejected"
+EXC_GUARD_MODE_COMMAND_UNSUPPORTED: Final = "guard_mode_command_unsupported"
 # A setting write the station answered but did not apply. The entity keeps
 # the last value it read, so nothing shows a value the station never took.
 EXC_SETTING_NOT_APPLIED: Final = "setting_not_applied"
+EXC_SETTING_REJECTED: Final = "setting_rejected"
+EXC_SETTING_COMMAND_UNSUPPORTED: Final = "setting_command_unsupported"
 # A setting write for a device the station cannot address: eufy's device list does
 # not pair it to this station, or its cloud record names no slot. Both are ordinary
 # runtime states rather than programming errors, so both are named.
@@ -290,6 +294,8 @@ EXC_PRESET_NOT_DELETED: Final = "preset_not_deleted"
 # A slot index the camera does not have; nothing was sent.
 EXC_PRESET_SLOT_UNKNOWN: Final = "preset_slot_unknown"
 EXC_PRESET_SAVE_UNSUPPORTED: Final = "preset_save_unsupported"
+EXC_PRESET_DELETE_UNSUPPORTED: Final = "preset_delete_unsupported"
+EXC_PRESET_DEFAULT_UNSUPPORTED: Final = "preset_default_unsupported"
 # A preset picture from the card that is no JPEG or too large; nothing was stored.
 EXC_PRESET_IMAGE_INVALID: Final = "preset_image_invalid"
 # The record action: one capture per camera at a time; nothing was started.
@@ -310,6 +316,15 @@ EXC_RECORDING_NOT_RUNNING: Final = "recording_not_running"
 EXC_RECORDING_STOPPED_EMPTY: Final = "recording_stopped_empty"
 # A security mode the select shows but cannot set (a custom mode, geofencing).
 EXC_SECURITY_MODE_NOT_SETTABLE: Final = "security_mode_not_settable"
+# A siren command the device acknowledged but never confirmed.
+EXC_SIREN_NOT_CONFIRMED: Final = "siren_not_confirmed"
+# A siren command the device answered with an error (a -108 receipt included).
+EXC_SIREN_REJECTED: Final = "siren_rejected"
+# A siren command the library refused before sending: the alarm is not offered, or the
+# device is not paired to the station in eufy's latest device list.
+EXC_SIREN_UNSUPPORTED: Final = "siren_unsupported"
+# A HomeBase siren duration above the longest the library sends; nothing was sent.
+EXC_SIREN_DURATION_INVALID: Final = "siren_duration_invalid"
 
 # Repair issue translation keys (the top-level "issues" key of strings.json). Each
 # issue id is the key followed by the entry id, and for a station's issue the
@@ -392,6 +407,10 @@ TILT_UP_KEY: Final = "tilt_up"
 TILT_DOWN_KEY: Final = "tilt_down"
 # The "Save current view" button's translation and unique-id key.
 SAVE_VIEW_KEY: Final = "save_view"
+# The siren's translation and unique-id key: a camera's own siren, or the HomeBase's.
+SIREN_KEY: Final = "siren"
+# The HomeBase siren's length when turn_on names no duration.
+STATION_SIREN_DEFAULT_SECONDS: Final = 30
 # How long a HomeBase session may be down before its entities show unavailable: the
 # library reconnects within about a second, so a drop that recovers within this is no
 # outage (library guide, Availability).
